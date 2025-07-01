@@ -41,13 +41,22 @@ const getOrCreatePlayerId = () => {
 
 const currentPlayerId = getOrCreatePlayerId();
 
-// --- OtherPlayer 컴포넌트 (변경 없음) ---
+// --- OtherPlayer 컴포넌트 (RigidBody와 CapsuleCollider 추가) ---
 function OtherPlayer({ id, position, rotationY, animationState }) {
-    const modelGroupRef = useRef();
+    const rigidBodyRef = useRef(); // RigidBody에 대한 ref 추가
+    const modelGroupRef = useRef(); // 모델 그룹에 대한 ref 유지
 
     useFrame(() => {
+        if (rigidBodyRef.current && position) {
+            // 서버에서 받은 위치 정보를 기반으로 RigidBody의 위치를 직접 설정합니다.
+            const newPos = new THREE.Vector3(position.x, position.y, position.z);
+            rigidBodyRef.current.setTranslation(newPos, true); // true는 wakeUp을 의미, 다른 객체와 상호작용 가능하게 함
+        }
+
         if (modelGroupRef.current) {
-            modelGroupRef.current.position.lerp(new THREE.Vector3(position.x, position.y - 1.63, position.z), 0.2);
+            // 모델의 시각적인 회전만 부드럽게 보간합니다.
+            // 물리적인 회전은 RigidBody가 처리하지만, 여기서는 시각적인 일치감을 위해 사용.
+            // 필요에 따라 RigidBody의 rotation을 직접 setRotation으로 제어할 수도 있습니다.
             modelGroupRef.current.rotation.y = THREE.MathUtils.lerp(modelGroupRef.current.rotation.y, rotationY + Math.PI, 0.2);
         }
     });
@@ -55,10 +64,25 @@ function OtherPlayer({ id, position, rotationY, animationState }) {
     const safeAnimationState = animationState || {};
 
     return (
-        <group ref={modelGroupRef}>
-            <CharacterModel2 {...safeAnimationState} />
+        <RigidBody
+            ref={rigidBodyRef}
+            position={[position.x, position.y, position.z]} // 초기 위치 설정
+            colliders={false} // RigidBody 자체의 자동 충돌체 생성을 끔
+            type="kinematicPosition" // 외부에서 위치를 제어할 수 있도록 설정
+            enabledRotations={[false, false, false]} // 회전 제한 (필요에 따라 변경)
+        >
+            {/* 캡슐 충돌체 추가: 플레이어 모델의 대략적인 크기에 맞춥니다. */}
+            <CapsuleCollider args={[0.35, 0.4]} /> 
+
+            {/* CharacterModel2를 RigidBody의 자식으로 둡니다. */}
+            {/* 모델의 Pivot이 바닥에 오도록 y축 오프셋을 조정합니다. (Player 컴포넌트와 동일) */}
+            <group ref={modelGroupRef} position-y={-1.65}>
+                <CharacterModel2 {...safeAnimationState} />
+            </group>
+            
+            {/* 플레이어 ID 텍스트는 모델 위에 표시되도록 그룹 외부 또는 모델 그룹 자식으로 둘 수 있습니다. */}
             <Text
-                position={[0, 2.6, 0]}
+                position={[0, 2.6 - 0.725, 0]} // 모델 Y 오프셋을 고려하여 텍스트 위치 조정
                 fontSize={0.2}
                 color="black"
                 anchorX="center"
@@ -67,7 +91,7 @@ function OtherPlayer({ id, position, rotationY, animationState }) {
             >
                 {id.substring(0, 5)}
             </Text>
-        </group>
+        </RigidBody>
     );
 }
 
@@ -92,7 +116,7 @@ function Player({ onHudUpdate, objectRefs, stompClientInstance, onSceneObjectsUp
     });
 
     const toggleViewPressed = useRef(false);
-
+    
     // Initial player registration when Player component mounts and STOMP is connected
     // This runs only once per Player component mount when stompClientInstance becomes available
     useEffect(() => {
@@ -448,7 +472,12 @@ function SceneObject({ obj, objectRefs }) {
             colliders={obj.collider}
         >
             <mesh castShadow receiveShadow>
-                <sphereGeometry args={[obj.radius, 32, 32]} />
+                {/* obj.type이 'box'이면 boxGeometry를, 아니면 sphereGeometry를 사용합니다. */}
+                {obj.type === 'box' ? (
+                    <boxGeometry args={[obj.size.x, obj.size.y, obj.size.z]} /> // 박스 크기는 obj.size에서 가져옵니다.
+                ) : (
+                    <sphereGeometry args={[obj.radius, 32, 32]} /> // 구체 크기는 obj.radius에서 가져옵니다.
+                )}
                 <meshStandardMaterial color={obj.color} />
             </mesh>
         </RigidBody>
@@ -498,6 +527,14 @@ export default function App() {
             radius: 1.2,
             color: 'lime',
             collider: 'ball',
+        },
+        {
+            id: 'myBox1', // **고유한 ID**를 지정해주세요.
+            type: 'box', // **type을 'box'로 설정**하여 SceneObject가 박스를 렌더링하도록 합니다.
+            position: { x: 3, y: 0.5, z: -2 }, // 박스의 초기 위치
+            size: { x: 2, y: 1, z: 2 }, // **박스의 가로(x), 세로(y), 깊이(z) 크기**를 지정합니다.
+            color: 'red', // 박스의 색상
+            collider: 'cuboid', // **충돌체 타입도 'box'로 설정**하여 SceneObject가 Rapier의 'cuboid'를 사용하도록 합니다.
         },
     ]);
     const objectRefs = useRef({});
@@ -610,7 +647,16 @@ export default function App() {
             <PlayerHUD state={hudState} />
 
             <KeyboardControls map={controlsMap}>
-                <Canvas shadows camera={{ fov: 60, position: [0, 5, 10] }} style={{ width: '100vw', height: '100vh' }}>
+                <Canvas
+                    shadows
+                    camera={{ fov: 60, position: [0, 5, 10] }}
+                    style={{ width: '100vw', height: '100vh' }}
+                    linear={false}
+                >
+                    {/* 배경색을 어둡게 설정합니다. 완전 검정색이나 아주 어두운 회색을 사용하세요. */}
+                    <color attach="background" args={['#8fafdb']} /> {/* 어두운 회색 */}
+                    {/* 또는 완전 검정색: <color attach="background" args={['black']} /> */}
+
                     <ambientLight intensity={0.5} />
                     <directionalLight position={[5, 10, 5]} intensity={1} castShadow />
                     <Physics gravity={[0, -9.81, 0]}>
@@ -618,7 +664,7 @@ export default function App() {
                         <RigidBody type="fixed">
                             <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
                                 <planeGeometry args={[100, 100]} />
-                                <meshStandardMaterial color="gray" />
+                                <meshStandardMaterial color="green" />
                             </mesh>
                         </RigidBody>
 
